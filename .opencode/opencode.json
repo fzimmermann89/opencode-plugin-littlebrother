@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": {
+    "littlebrother": {
+      "supervisor": {
+        "model": "google/gemini-3.0-flash"
+      },
+      "failOpen": true,
+      "debug": true,
+      "watchdog": {
+        "enabled": true,
+        "checkIntervalTokens": 500
+      },
+      "gatekeeper": {
+        "enabled": true
+      },
+      "sanitizer": {
+        "enabled": true
+      }
+    }
+  }
+}

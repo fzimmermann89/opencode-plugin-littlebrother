@@ -28,3 +28,7 @@ coverage/
 
 # Bun
 bun.lockb
+
+# OpenCode local dev
+.opencode/
+opencode.json
