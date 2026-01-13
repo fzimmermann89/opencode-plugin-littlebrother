@@ -1,137 +1,130 @@
-# LittleBrother Plugin for OpenCode
+# LittleBrother Plugin for OpenCode 👀
 
-Supervisor plugin for OpenCode that monitors, audits, and intervenes in AI agent behavior using a configurable supervisor LLM.
+Supervisor plugin for OpenCode—the "little big brother" that uses a compact LLM to monitor, audit, and intervene in your main AI agent's behavior.
 
 ## Features
 
-- **Stream Watchdog**: Periodically queries a supervisor model to monitor streaming output, can abort sessions with explanatory messages when issues are detected
-- **Action Gatekeeper**: Intercepts tool execution before execution, queries supervisor to allow or block operations, supports fail-open/fail-closed modes
-- **Result Sanitizer**: Post-processes tool outputs, truncates large outputs and redacts potential secrets, with optional deep analysis via supervisor
+- **Stream Watchdog**: Monitors streaming output in real-time, aborts sessions with explanatory messages when policy violations are detected
+- **Action Gatekeeper**: Intercepts and evaluates tool execution requests before invocation; supports configurable allow/block lists and fail modes
+- **Result Sanitizer**: Post-processes tool outputs; truncates oversized content, redacts secrets, and optionally performs deep content analysis
 
-## Configuration
-
-Configuration is done via a dedicated config file at `.opencode/littlebrother.json` (per-project) or `~/.config/opencode/littlebrother.json` (global).
-
-
-### Example Config (`.opencode/littlebrother.json`)
-
-```json
-{
-  "supervisor": {
-    "model": "google/gemini-2.5-flash"
-  },
-  "failOpen": true,
-  "timeout": 5000,
-  "watchdog": {
-    "enabled": true,
-    "checkIntervalTokens": 500,
-    "maxBufferTokens": 2000
-  },
-  "gatekeeper": {
-    "enabled": true,
-    "blockedTools": [],
-    "alwaysAllowTools": ["read", "glob", "grep", "lsp_hover", "lsp_diagnostics"]
-  },
-  "sanitizer": {
-    "enabled": true,
-    "maxOutputChars": 5000,
-    "redactSecrets": true,
-    "deepAnalysis": false
-  },
-  "debug": false
-}
-```
-
-The plugin also reads `small_model` from OpenCode's main config as a fallback for the supervisor model.
-
-### Options
-
-| Option | Type | Default | Description |
-|---------|--------|----------|-------------|
-| `supervisor.model` | `string \| undefined` | Model in `provider/model` format. Falls back to `small_model` from global config, then `google/gemini-3.0-flash`. |
-| `failOpen` | `boolean` | `true` | When supervisor fails, allow actions and show toast. `false` blocks actions and aborts on failure. |
-| `timeout` | `number` | `5000` | Supervisor query timeout in ms (clamped 1000-30000). |
-| `watchdog.enabled` | `boolean` | `true` | Enable stream monitoring. |
-| `watchdog.checkIntervalTokens` | `number` | `500` | Check supervisor every N characters (clamped 100-5000). |
-| `watchdog.maxBufferTokens` | `number` | `2000` | Max buffer size in characters before truncation (clamped 500-10000). |
-| `gatekeeper.enabled` | `boolean` | `true` | Enable tool execution gating. |
-| `gatekeeper.blockedTools` | `string[]` | `[]` | Tool names that are always blocked. |
-| `gatekeeper.alwaysAllowTools` | `string[]` | `["read", "glob", "grep", "lsp_hover", "lsp_diagnostics"]` | Tools that bypass supervisor. |
-| `sanitizer.enabled` | `boolean` | `true` | Enable result sanitization. |
-| `sanitizer.maxOutputChars` | `number` | `5000` | Truncate outputs after N characters (clamped 1000-50000). |
-| `sanitizer.redactSecrets` | `boolean` | `true` | Heuristically redact potential secrets. |
-| `sanitizer.deepAnalysis` | `boolean` | `false` | Query supervisor for content analysis on outputs >1000 chars. |
-| `debug` | `boolean` | `false` | Enable debug logging. |
-
-## Supervisor Models
-
-The supervisor model is specified in `provider/model` format (e.g., `google/gemini-3.0-flash`, `anthropic/claude-3-haiku-20240307`).
-
-The plugin first checks the configured model:
-1. `littlebrother.supervisor.model` (plugin-specific)
-2. `small_model` (global OpenCode config)
-3. Falls back to `google/gemini-3.0-flash`
-
-If the configured model is invalid (malformed), the plugin uses the default and shows a warning toast.
-
-## Behavior
-
-### Watchdog
-
-- Monitors `message.part.updated` events for text deltas
-- Accumulates characters in a buffer and checks the supervisor every `checkIntervalTokens` chars
-- When supervisor returns `ABORT`, the plugin:
-  - Injects a message into the session explaining why
-  - Shows an error toast
-  - Aborts the session
-- Ignores deltas containing `[LittleBrother]` to avoid recursion
-
-### Gatekeeper
-
-- Intercepts `tool.execute.before` events
-- Whitelisted tools (default safe ones) bypass supervisor
-- Blacklisted tools are always blocked
-- Other tools are queried to supervisor:
-  - `ALLOW`: tool executes
-  - `BLOCK`: tool blocked, toast shown, `GatekeeperBlockError` thrown
-- On supervisor failure:
-  - `failOpen`: tool allowed, warning toast
-  - `failClosed`: tool blocked, error toast, error thrown
-
-### Sanitizer
-
-- Intercepts `tool.execute.after` events
-- Truncates outputs exceeding `maxOutputChars`
-- Redacts potential secrets using regex patterns (API keys, tokens, JWTs, connection strings)
-- Optionally runs deep analysis via supervisor (`deepAnalysis: true`):
-  - `SAFE`: no changes
-  - `REDACT`: output replaced with `replacement` field
-
-### Internal Sessions
-
-The plugin creates internal supervisor sessions per main session to avoid polluting user conversation. These are:
-- Created as child sessions with `parentID` set
-- Titled "LittleBrother Supervisor"
-- Have all tools disabled to prevent recursion
-- Tracked and cleaned up on main session deletion
-
-## Installation
+## Quick Start
 
 ```bash
 npm install opencode-littlebrother
 ```
 
-Then add to your OpenCode config:
-
+Add to `.opencode/config.json`:
 ```json
 {
   "plugin": ["opencode-littlebrother"]
 }
 ```
+
+Configure in `.opencode/littlebrother.json`:
+```json
+{
+  "supervisor": {
+    "model": "google/gemini-2.5-flash"
+  },
+  "failOpen": true
+}
+```
+
+## Configuration
+
+Configuration files are resolved in order:
+1. `.opencode/littlebrother.json` (project)
+2. `~/.config/opencode/littlebrother.json` (global)
+
+### Options
+
+| Option | Type | Default | Range | Description |
+|--------|------|---------|-------|-------------|
+| `supervisor.model` | `string` | `google/gemini-2.5-flash` | — | Provider/model identifier. Falls back to OpenCode's `small_model` if unspecified. |
+| `failOpen` | `boolean` | `true` | — | Supervisor failure behavior: `true` allows actions with warning; `false` blocks actions and aborts. |
+| `timeout` | `number` | `5000` | [1000, 30000] | Supervisor query timeout (ms). |
+| `watchdog.enabled` | `boolean` | `true` | — | Enable stream monitoring. |
+| `watchdog.checkIntervalTokens` | `number` | `500` | [100, 5000] | Token interval between supervisor checks. |
+| `watchdog.maxBufferTokens` | `number` | `2000` | [500, 10000] | Maximum buffer size before truncation. |
+| `gatekeeper.enabled` | `boolean` | `true` | — | Enable tool execution gating. |
+| `gatekeeper.blockedTools` | `string[]` | `[]` | — | Tool names always blocked. |
+| `gatekeeper.alwaysAllowTools` | `string[]` | `["read", "glob", "grep", "lsp_hover", "lsp_diagnostics"]` | — | Tools bypassing supervisor evaluation. |
+| `sanitizer.enabled` | `boolean` | `true` | — | Enable result sanitization. |
+| `sanitizer.maxOutputChars` | `number` | `5000` | [1000, 50000] | Character limit before truncation. |
+| `sanitizer.redactSecrets` | `boolean` | `true` | — | Redact API keys, tokens, JWTs, and connection strings via pattern matching. |
+| `sanitizer.deepAnalysis` | `boolean` | `false` | — | Query supervisor for content analysis on outputs >1000 chars. |
+| `debug` | `boolean` | `false` | — | Enable debug logging. |
+
+## Supervisor Model Resolution
+
+The supervisor model is resolved in descending priority:
+1. `littlebrother.supervisor.model` in plugin config
+2. `small_model` from OpenCode global config
+3. Default: `google/gemini-2.5-flash`
+
+Malformed model identifiers trigger a warning toast and fallback to default.
+
+## Behavior
+
+### Watchdog
+
+Monitors `message.part.updated` events:
+- Accumulates text deltas in buffer
+- Queries supervisor every `checkIntervalTokens` characters
+- On `ABORT` response: injects explanation message, shows error toast, terminates session
+- Ignores deltas containing `[LittleBrother]` to prevent recursive monitoring
+
+### Gatekeeper
+
+Intercepts `tool.execute.before` events:
+- `alwaysAllowTools`: bypass supervisor, execute immediately
+- `blockedTools`: block execution, show toast, throw `GatekeeperBlockError`
+- Other tools: query supervisor
+  - `ALLOW`: execute tool
+  - `BLOCK`: block execution, show toast, throw `GatekeeperBlockError`
+- Supervisor failure:
+  - `failOpen=true`: allow execution, show warning toast
+  - `failOpen=false`: block execution, show error toast, throw `GatekeeperBlockError`
+
+### Sanitizer
+
+Intercepts `tool.execute.after` events:
+- Truncates outputs exceeding `maxOutputChars`
+- Redacts secrets using regex patterns when `redactSecrets=true`
+- Deep analysis (`deepAnalysis=true`):
+  - Queries supervisor for outputs >1000 chars
+  - `SAFE`: return unmodified
+  - `REDACT`: replace with supervisor-provided `replacement` text
+
+### Internal Sessions
+
+Creates isolated supervisor sessions per main session:
+- Child sessions with `parentID` reference
+- Title: "LittleBrother Supervisor"
+- All tools disabled to prevent recursion
+- Automatic cleanup on main session deletion
+
 ## Development
 
-- mise run build - Build the plugin
-- mise run test - Run tests
-- mise run lint - Lint code
-- mise run lint:fix - Fix linting issues
-- mise run format - Format code with Prettier
+Prerequisites: Node.js ≥18, mise
+
+```bash
+# Install dependencies
+npm install
+
+# Build
+mise run build
+
+# Run tests
+mise run test
+
+# Lint
+mise run lint
+
+# Fix linting issues
+mise run lint:fix
+
+# Format code
+mise run format
+```
