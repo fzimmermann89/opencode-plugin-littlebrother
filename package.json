@@ -1,0 +1,59 @@
+{
+  "name": "opencode-plugin-littlebrother",
+  "version": "0.1.0",
+  "description": "Supervisor middleware plugin for OpenCode - monitors, audits, and intervenes in AI agent behavior",
+  "author": "fzimmermann89",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --format esm && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
+    "dev": "bun --watch src/index.ts",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --fix src/",
+    "format": "biome format --write src/",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "prepublishOnly": "bun run build"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@opencode-ai/plugin": "^1.1.16",
+    "@opencode-ai/sdk": "^1.1.16",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0",
+    "zod": "^3.24.0"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "supervisor",
+    "safety",
+    "middleware",
+    "ai-safety",
+    "guardrails"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fzimmermann89/opencode-plugin-littlebrother"
+  },
+  "bugs": {
+    "url": "https://github.com/fzimmermann89/opencode-plugin-littlebrother/issues"
+  },
+  "homepage": "https://github.com/fzimmermann89/opencode-plugin-littlebrother#readme"
+}
