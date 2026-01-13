@@ -1,144 +1,138 @@
-/**
- * OpenCode Plugin Template
- *
- * This is an example plugin that demonstrates the plugin capabilities:
- * - Custom tools (tools callable by the LLM)
- * - Custom slash commands (user-invokable /commands loaded from .md files)
- * - Config hooks (modify config at runtime)
- *
- * Replace this with your own plugin implementation.
- */
-
 import type { Plugin } from '@opencode-ai/plugin';
-import { tool } from '@opencode-ai/plugin';
-import path from 'path';
+import { z } from 'zod';
+import { createActionGatekeeper, createResultSanitizer, createStreamWatchdog } from './components';
+import { DEFAULT_SUPERVISOR_MODEL, LittleBrotherConfigSchema, parseModelString } from './config';
+import type { LittleBrotherConfig } from './config';
+import { SupervisorClient } from './supervisor-client';
+import type { EventPayload, SessionState } from './types';
+import { createLogger } from './utils';
+import { showToast } from './utils/notifications';
 
-// ============================================================
-// COMMAND LOADER
-// Loads .md files from src/command/ directory as slash commands
-// ============================================================
-
-interface CommandFrontmatter {
-  description?: string;
-  agent?: string;
-  model?: string;
-  subtask?: boolean;
-}
-
-interface ParsedCommand {
-  name: string;
-  frontmatter: CommandFrontmatter;
-  template: string;
-}
-
-/**
- * Parse YAML frontmatter from a markdown file
- * Format:
- * ---
- * description: Command description
- * agent: optional-agent
- * ---
- * Template content here
- */
-function parseFrontmatter(content: string): { frontmatter: CommandFrontmatter; body: string } {
-  const frontmatterRegex = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
-  const match = content.match(frontmatterRegex);
-
-  if (!match) {
-    return { frontmatter: {}, body: content.trim() };
+async function loadPluginConfig(directory: string): Promise<unknown> {
+  try {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const configPath = path.join(directory, '.opencode', 'littlebrother.json');
+    const content = await fs.readFile(configPath, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return {};
   }
-
-  const [, yamlContent, body] = match;
-  const frontmatter: CommandFrontmatter = {};
-
-  // Simple YAML parsing for key: value pairs
-  for (const line of yamlContent.split('\n')) {
-    const colonIndex = line.indexOf(':');
-    if (colonIndex === -1) continue;
-
-    const key = line.slice(0, colonIndex).trim();
-    const value = line.slice(colonIndex + 1).trim();
-
-    if (key === 'description') frontmatter.description = value;
-    if (key === 'agent') frontmatter.agent = value;
-    if (key === 'model') frontmatter.model = value;
-    if (key === 'subtask') frontmatter.subtask = value === 'true';
-  }
-
-  return { frontmatter, body: body.trim() };
 }
 
-/**
- * Load all command .md files from the command directory
- */
-async function loadCommands(): Promise<ParsedCommand[]> {
-  const commands: ParsedCommand[] = [];
-  const commandDir = path.join(import.meta.dir, 'command');
-  const glob = new Bun.Glob('**/*.md');
+const LittleBrotherPlugin: Plugin = async (ctx) => {
+  try {
+    const pluginRaw = await loadPluginConfig(ctx.directory);
 
-  for await (const file of glob.scan({ cwd: commandDir, absolute: true })) {
-    const content = await Bun.file(file).text();
-    const { frontmatter, body } = parseFrontmatter(content);
+    const lenientPluginConfig = z
+      .object({
+        supervisor: z.object({ model: z.string().optional() }).default({}),
+      })
+      .passthrough();
+    const basePluginConfig = lenientPluginConfig.parse(pluginRaw);
 
-    // Extract command name from filename (e.g., "hello.md" -> "hello")
-    const relativePath = path.relative(commandDir, file);
-    const name = relativePath.replace(/\.md$/, '').replace(/\//g, '-');
+    const requestedSupervisorModel = basePluginConfig.supervisor.model;
 
-    commands.push({
-      name,
-      frontmatter,
-      template: body,
-    });
-  }
-
-  return commands;
-}
-
-export const ExamplePlugin: Plugin = async () => {
-  // ============================================================
-  // LOAD COMMANDS FROM .MD FILES
-  // Commands are loaded at plugin initialization time
-  // ============================================================
-  const commands = await loadCommands();
-
-  // ============================================================
-  // EXAMPLE TOOL
-  // Tools are callable by the LLM during conversations
-  // ============================================================
-  const exampleTool = tool({
-    description: 'An example tool that echoes back the input message',
-    args: {
-      message: tool.schema.string().describe('The message to echo'),
-    },
-    async execute(args) {
-      return `Echo: ${args.message}`;
-    },
-  });
-
-  return {
-    // Register custom tools
-    tool: {
-      example_tool: exampleTool,
-    },
-
-    // ============================================================
-    // CONFIG HOOK
-    // Modify config at runtime - use this to inject custom commands
-    // ============================================================
-    async config(config) {
-      // Initialize the command record if it doesn't exist
-      config.command = config.command ?? {};
-
-      // Register all loaded commands
-      for (const cmd of commands) {
-        config.command[cmd.name] = {
-          template: cmd.template,
-          description: cmd.frontmatter.description,
-          agent: cmd.frontmatter.agent,
-          model: cmd.frontmatter.model,
-          subtask: cmd.frontmatter.subtask,
-        };
+    let supervisorModel: string | undefined;
+    if (requestedSupervisorModel) {
+      try {
+        parseModelString(requestedSupervisorModel);
+        supervisorModel = requestedSupervisorModel;
+      } catch {
+        // Invalid model format in config - will use lazy-loaded small_model or default
       }
-    },
-  };
+    }
+
+    const config: LittleBrotherConfig = LittleBrotherConfigSchema.parse({
+      ...basePluginConfig,
+      supervisor: { ...basePluginConfig.supervisor, model: supervisorModel },
+    });
+
+    const logger = createLogger(ctx.client, config.debug);
+
+    const supervisorClient = new SupervisorClient({
+      client: ctx.client,
+      logger,
+      config,
+      directory: ctx.directory,
+    });
+
+    const sessionStates = new Map<string, SessionState>();
+
+    logger.info('LittleBrother plugin initialized', {
+      supervisorModel: config.supervisor.model ?? 'lazy-loaded',
+      failOpen: config.failOpen,
+      watchdogEnabled: config.watchdog.enabled,
+      gatekeeperEnabled: config.gatekeeper.enabled,
+      sanitizerEnabled: config.sanitizer.enabled,
+    });
+
+    const watchdog = config.watchdog.enabled
+      ? createStreamWatchdog(ctx.client, supervisorClient, config, logger, sessionStates)
+      : null;
+
+    const gatekeeper = config.gatekeeper.enabled
+      ? createActionGatekeeper(ctx.client, supervisorClient, config, logger, sessionStates)
+      : null;
+
+    const sanitizer = config.sanitizer.enabled
+      ? createResultSanitizer(ctx.client, supervisorClient, config, logger)
+      : null;
+
+    return {
+      event: async (input: { event: EventPayload }) => {
+        if (input.event.type === 'session.deleted') {
+          const deletedID = (input.event.properties?.info as { id?: string })?.id;
+          if (deletedID) {
+            supervisorClient.cleanupSession(deletedID);
+            watchdog?.cleanup(deletedID);
+            sessionStates.delete(deletedID);
+          }
+          return;
+        }
+
+        const eventSessionID =
+          input.event.properties?.part?.sessionID ||
+          (input.event.properties?.info as { id?: string })?.id ||
+          undefined;
+
+        if (supervisorClient.isInternalSession(eventSessionID)) return;
+
+        await watchdog?.event(input);
+      },
+
+      'chat.message': async (input, output) => {
+        const sessionID = (input as { sessionID: string }).sessionID;
+        if (supervisorClient.isInternalSession(sessionID)) return;
+
+        const parts = (output as { parts?: Array<{ type: string; text?: string }> }).parts;
+        await watchdog?.['chat.message']?.({ sessionID }, { parts });
+      },
+
+      'tool.execute.before': async (input, output) => {
+        const typedInput = input as { tool: string; sessionID: string; callID: string };
+        if (supervisorClient.isInternalSession(typedInput.sessionID)) return;
+
+        await gatekeeper?.['tool.execute.before'](
+          typedInput,
+          output as { args: Record<string, unknown> }
+        );
+      },
+
+      'tool.execute.after': async (input, output) => {
+        const typedInput = input as { tool: string; sessionID: string; callID: string };
+        if (supervisorClient.isInternalSession(typedInput.sessionID)) return;
+
+        await sanitizer?.['tool.execute.after'](
+          typedInput,
+          output as { title: string; output: string; metadata: unknown }
+        );
+      },
+    };
+  } catch (err) {
+    console.error('[LittleBrother] Fatal error:', err);
+    throw err;
+  }
 };
+
+export default LittleBrotherPlugin;
