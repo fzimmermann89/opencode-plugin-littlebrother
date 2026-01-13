@@ -4,6 +4,7 @@ import { parseModelString } from './config'
 import { GATEKEEPER_SYSTEM, SANITIZER_SYSTEM, WATCHDOG_SYSTEM } from './prompts'
 import type { SupervisorDecision } from './types'
 import type { Logger } from './utils/logger'
+import { showToast } from './utils/notifications'
 
 type ModelRef = { providerID: string; modelID: string }
 
@@ -97,7 +98,17 @@ export class SupervisorClient {
     const systemPrompt = SYSTEM_PROMPTS[type]
     const userContent = context?.userGoal ? `User Goal: ${context.userGoal}\n\nPayload:\n${payload}` : payload
 
-    return this.callWithRetry(mainSessionID, systemPrompt, userContent)
+    if (this.config.debug) {
+      await showToast(this.client, `Supervisor[${type}]: Querying with payload length ${userContent.length}`, 'info')
+    }
+
+    const decision = await this.callWithRetry(mainSessionID, systemPrompt, userContent)
+
+    if (this.config.debug) {
+      await showToast(this.client, `Supervisor[${type}]: ${decision.status} - ${decision.reason}`, 'info')
+    }
+
+    return decision
   }
 
   private async ensureSupervisorSession(mainSessionID: string): Promise<string> {
